@@ -2,8 +2,9 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from app.services.pdf_service import (
     PDFExtractionError,
-    extract_text,
+    extract_pages,
 )
+from app.services.chunking_service import chunk_pages
 
 app = FastAPI(
     title="PDF Ingestor & Semantic Search API",
@@ -46,20 +47,31 @@ async def ingest(
             )
             
         try:
-            text = extract_text(file_bytes)
+            pages = extract_pages(file_bytes)
+            
+            chunks = chunk_pages(
+                pages=pages,
+                document=filename,
+            )
         except PDFExtractionError as exc:
             raise HTTPException(
                 status_code=400,
                 detail=f"Failed to process '{filename}'.",
             ) from exc
         
-        if not text:
+        if not pages:
             raise HTTPException(
                 status_code=400,
                 detail=f"No text could be extracted from '{filename}'.",
             )
             
         ingested_files.append(filename)
+
+        print(
+            f"{filename}: extracted "
+            f"{len(pages)} pages and "
+            f"{len(chunks)} chunks"
+        )
     
     return {
         "message": (
