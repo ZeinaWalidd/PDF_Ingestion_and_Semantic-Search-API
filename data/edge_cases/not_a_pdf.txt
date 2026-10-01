@@ -1,0 +1,1 @@
+Only .pdf files are accepted.
