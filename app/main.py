@@ -114,6 +114,8 @@ def health(request: Request):
 # /ingest/ reads the multipart form by hand because `input` may hold files
 # or a directory path string, which a typed FastAPI parameter can't express.
 # This schema keeps the endpoint usable from /docs.
+MAX_DOCUMENT_ID_LENGTH = 200
+
 INGEST_OPENAPI = {
     "requestBody": {
         "required": True,
@@ -130,7 +132,25 @@ INGEST_OPENAPI = {
                                 "One or more PDF files, or a directory path "
                                 "inside the data volume (e.g. /data/pdfs)."
                             ),
-                        }
+                        },
+                        "replace": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Replace previously ingested versions of the same "
+                                "document (same document_id, or same filename when "
+                                "no document_id is given) instead of keeping both."
+                            ),
+                        },
+                        "document_id": {
+                            "type": "string",
+                            "maxLength": MAX_DOCUMENT_ID_LENGTH,
+                            "description": (
+                                "Optional stable ID for a single uploaded document "
+                                "(e.g. finance/report). Use it to tell apart "
+                                "documents that share a filename."
+                            ),
+                        },
                     },
                 }
             }
@@ -145,7 +165,14 @@ async def ingest(request: Request):
         items = form.getlist("input")
         if not items:
             raise HTTPException(status_code=400, detail="input: Field required")
+        replace = _parse_bool(form.get("replace"), field="replace")
+        document_id = _parse_document_id(form.get("document_id"))
         files = await _collect_files(items)
+
+    if document_id is not None and len(files) != 1:
+        raise IngestionError("document_id can only be used when ingesting a single file.")
+    if replace and document_id is None:
+        _check_unique_filenames([filename for filename, _ in files])
 
     # Validate every file before storing any, so one bad file in a batch
     # fails the whole request instead of leaving a partial ingestion.
@@ -158,7 +185,9 @@ async def ingest(request: Request):
         )
 
     for document in documents:
-        await run_in_threadpool(_embed_and_store, request.app, document)
+        await run_in_threadpool(
+            _embed_and_store, request.app, document, replace, document_id
+        )
 
     ingested_files = [document.filename for document in documents]
     noun = "document" if len(ingested_files) == 1 else "documents"
@@ -166,6 +195,43 @@ async def ingest(request: Request):
         "message": f"Successfully ingested {len(ingested_files)} PDF {noun}.",
         "files": ingested_files,
     }
+
+
+def _parse_bool(value: UploadFile | str | None, field: str) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower() if isinstance(value, str) else None
+    if normalized in ("true", "1", "yes"):
+        return True
+    if normalized in ("false", "0", "no", ""):
+        return False
+    raise IngestionError(f"{field} must be true or false.")
+
+
+def _parse_document_id(value: UploadFile | str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise IngestionError("document_id must be a non-empty string.")
+    value = value.strip()
+    if len(value) > MAX_DOCUMENT_ID_LENGTH:
+        raise IngestionError(
+            f"document_id must be at most {MAX_DOCUMENT_ID_LENGTH} characters."
+        )
+    return value
+
+
+def _check_unique_filenames(filenames: list[str]) -> None:
+    # With replace=true a filename identifies one document, so two different
+    # files with the same name in one request would be ambiguous.
+    seen = set()
+    for filename in filenames:
+        if filename in seen:
+            raise IngestionError(
+                f"Duplicate filename '{filename}': cannot replace by filename "
+                "when one request contains it more than once."
+            )
+        seen.add(filename)
 
 
 async def _collect_files(items: list[UploadFile | str]) -> list[tuple[str, bytes]]:
@@ -184,13 +250,22 @@ async def _collect_files(items: list[UploadFile | str]) -> list[tuple[str, bytes
     return files
 
 
-def _embed_and_store(app: FastAPI, document: PreparedDocument) -> None:
+def _embed_and_store(
+    app: FastAPI, document: PreparedDocument, replace: bool, document_id: str | None
+) -> None:
     started = time.perf_counter()
     embedder: EmbeddingService = app.state.embedder
     store: VectorStore = app.state.store
 
     vectors = embedder.embed_documents([chunk.content for chunk in document.chunks])
-    store.upsert_document(document.doc_id, document.chunks, vectors)
+    removed = store.upsert_document(
+        document.doc_id,
+        document.filename,
+        document.chunks,
+        vectors,
+        replace=replace,
+        document_id=document_id,
+    )
     logger.info(
         "%s: embedded and stored %d chunks in %.2fs (doc_id=%s)",
         document.filename,
@@ -198,6 +273,8 @@ def _embed_and_store(app: FastAPI, document: PreparedDocument) -> None:
         time.perf_counter() - started,
         document.doc_id[:12],
     )
+    if removed:
+        logger.info("%s: replaced %d chunks of older versions", document.filename, removed)
 
 
 class SearchRequest(BaseModel):
@@ -216,6 +293,7 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     document: str
+    document_id: str | None = None
     score: float
     content: str
     page: int
@@ -243,6 +321,7 @@ def search(body: SearchRequest, request: Request):
         results=[
             SearchResult(
                 document=hit.document,
+                document_id=hit.document_id,
                 score=round(hit.score, 4),
                 content=hit.content,
                 page=hit.page,
