@@ -1,9 +1,26 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\r\n\r\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   app:
     build: .
     ports:
       - "8000:8000"
     environment:
       DATA_DIR: /data
+      QDRANT_URL: http://qdrant:6333
     volumes:
       - ./data:/data:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+volumes:
+  qdrant_data:

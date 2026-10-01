@@ -1,6 +1,6 @@
+import hashlib
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 
 from app.config import (
     CHUNK_OVERLAP_WORDS,
@@ -22,6 +22,7 @@ class IngestionError(Exception):
 
 @dataclass
 class PreparedDocument:
+    doc_id: str
     filename: str
     pages: list[dict]
     chunks: list[Chunk]
@@ -44,6 +45,13 @@ def check_file_count(count: int) -> None:
         raise IngestionError(
             f"Too many files: at most {MAX_FILES_PER_REQUEST} PDFs per request."
         )
+
+
+def _content_hash(pages: list[dict]) -> str:
+    digest = hashlib.sha256()
+    for page in pages:
+        digest.update(f"{page['page']}\x00{page['text']}\x00".encode("utf-8"))
+    return digest.hexdigest()
 
 
 def prepare_document(filename: str, file_bytes: bytes) -> PreparedDocument:
@@ -71,7 +79,14 @@ def prepare_document(filename: str, file_bytes: bytes) -> PreparedDocument:
     logger.info(
         "%s: extracted %d pages and %d chunks", filename, len(pages), len(chunks)
     )
-    return PreparedDocument(filename=filename, pages=pages, chunks=chunks)
+    return PreparedDocument(
+        # Hash the extracted text, not the raw bytes: renamed or re-saved copies
+        # of the same document get the same doc_id, so they're stored once.
+        doc_id=_content_hash(pages),
+        filename=filename,
+        pages=pages,
+        chunks=chunks,
+    )
 
 
 def read_directory(path: str) -> list[tuple[str, bytes]]:

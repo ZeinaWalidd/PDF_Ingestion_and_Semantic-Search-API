@@ -1,5 +1,6 @@
 import logging
 import re
+from typing import cast
 
 import pymupdf
 
@@ -34,10 +35,11 @@ def _extract_pdf_pages(file_bytes: bytes) -> list[dict]:
             raise PDFExtractionError("Password-protected PDFs are not supported.")
 
         pages = []
-        for page_number, page in enumerate(document, start=1):
-            text = _join_hyphenated_words(page.get_text()).strip()
+        for index in range(document.page_count):
+            raw = cast(str, document[index].get_text("text"))
+            text = _join_hyphenated_words(raw).strip()
             if text:
-                pages.append({"page": page_number, "text": text})
+                pages.append({"page": index + 1, "text": text})
         return pages
     finally:
         document.close()
