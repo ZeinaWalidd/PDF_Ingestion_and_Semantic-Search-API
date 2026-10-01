@@ -102,21 +102,10 @@ class IngestionService:
         self._embedder = embedder
         self._repository = repository
 
-    def ingest(
-        self,
-        files: list[tuple[str, bytes]],
-        replace: bool = False,
-        document_id: str | None = None,
-    ) -> list[str]:
-
-        if document_id is not None and len(files) != 1:
-            raise IngestionError("document_id can only be used when ingesting a single file.")
-        if replace and document_id is None:
-            _check_unique_filenames([filename for filename, _ in files])
-
+    def ingest(self, files: list[tuple[str, bytes]]) -> list[str]:
         documents = [self._prepare(filename, data) for filename, data in files]
         for document in documents:
-            self._embed_and_store(document, replace, document_id)
+            self._embed_and_store(document)
         return [document.filename for document in documents]
 
     def _prepare(self, filename: str, file_bytes: bytes) -> PreparedDocument:
@@ -144,21 +133,12 @@ class IngestionService:
             chunks=chunks,
         )
 
-    def _embed_and_store(
-        self, document: PreparedDocument, replace: bool, document_id: str | None
-    ) -> None:
+    def _embed_and_store(self, document: PreparedDocument) -> None:
         started = time.perf_counter()
         vectors = self._embedder.embed_documents(
             [chunk.content for chunk in document.chunks]
         )
-        removed = self._repository.upsert_document(
-            document.doc_id,
-            document.filename,
-            document.chunks,
-            vectors,
-            replace=replace,
-            document_id=document_id,
-        )
+        self._repository.upsert_document(document.doc_id, document.chunks, vectors)
         logger.info(
             "%s: embedded and stored %d chunks in %.2fs (doc_id=%s)",
             document.filename,
@@ -166,19 +146,3 @@ class IngestionService:
             time.perf_counter() - started,
             document.doc_id[:12],
         )
-        if removed:
-            logger.info(
-                "%s: replaced %d chunks of older versions", document.filename, removed
-            )
-
-
-def _check_unique_filenames(filenames: list[str]) -> None:
-
-    seen = set()
-    for filename in filenames:
-        if filename in seen:
-            raise IngestionError(
-                f"Duplicate filename '{filename}': cannot replace by filename "
-                "when one request contains it more than once."
-            )
-        seen.add(filename)

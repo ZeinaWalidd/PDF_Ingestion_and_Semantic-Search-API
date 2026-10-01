@@ -57,25 +57,6 @@ response has the shape `{"error": "<message>"}`.
 ingests every sample PDF. Relative paths are resolved against `/data`. Paths
 outside it are rejected. Subdirectories are not searched.
 
-Two optional fields control document identity and versions:
-
-| Field | Meaning |
-|---|---|
-| `replace` | `false` (default): an edited file is stored next to the old version. `true`: it replaces earlier versions of the same document. |
-| `document_id` | A stable ID for a single uploaded file, such as `finance/report`. With it, "the same document" means the same ID; without it, the same filename. |
-
-```bash
-# Replace by filename
-curl -X POST "http://localhost:8000/ingest/" -F "input=@report.pdf" -F "replace=true"
-
-# Two different files both named report.pdf, kept apart by ID
-curl -X POST "http://localhost:8000/ingest/" -F "input=@finance/report.pdf" -F "document_id=finance/report"
-curl -X POST "http://localhost:8000/ingest/" -F "input=@legal/report.pdf"   -F "document_id=legal/report"
-
-# Update only the finance one
-curl -X POST "http://localhost:8000/ingest/" -F "input=@finance/report.pdf"   -F "document_id=finance/report" -F "replace=true"
-```
-
 ```json
 {"message": "Successfully ingested 4 PDF documents.",
  "files": ["football_rules.pdf", "renewable_energy.pdf", "sample.pdf", "sourdough_baking.pdf"]}
@@ -102,7 +83,6 @@ the "least bad" chunks.
   "results": [
     {
       "document": "sample.pdf",
-      "document_id": null,
       "score": 0.688,
       "content": "Semantic Search: An Overview Traditional keyword search matches ...",
       "page": 1,
@@ -113,9 +93,8 @@ the "least bad" chunks.
 ```
 
 `score` is cosine similarity, where higher means more relevant.
-`document_id`, `page` and `chunk_id` are extra fields beyond the spec, so each
-result can be traced back to its source. `document_id` is `null` for documents
-ingested without one.
+`page` and `chunk_id` are extra fields beyond the spec, so each result can be
+traced back to its source.
 
 ### `GET /health`
 
@@ -164,8 +143,8 @@ app/
 ```
 
 - **Service layer.** `IngestionService` and `SearchService` hold the business
-  rules: validating every file before storing any, replace and `document_id`
-  semantics, and timing logs. Routes only translate HTTP into service calls,
+  rules: validating every file before storing any, document identity, and
+  timing logs. Routes only translate HTTP into service calls,
   so the same services could back a CLI or a queue worker.
 - **Ports and adapters.** The services depend on the `TextExtractor`,
   `Chunker`, `Embedder` and `ChunkRepository` protocols in `ports.py`, never on
@@ -236,37 +215,11 @@ which measured at 196 tokens at most on real text. Chunks overlap by up to
 derived from `(doc_id, chunk_index)`. As a result:
 - **Uploading again is safe:** re-uploading the same document, even under
   another name, or several uploads of it at once, overwrites the same points
-  instead of creating duplicates.
-- **Leftover chunks are removed:** if the chunk settings change, a re-upload
-  deletes chunks with a higher index than the new chunk count.
-
-### Replacing edited documents (`replace`, `document_id`)
-By default, an edited file is a *new* document, because its content hash
-changes. With `replace=true`, earlier versions of the *same document* are
-deleted. "The same document" is decided by an identity key:
-
-| Upload | Identity key | Point IDs come from |
-|---|---|---|
-| With `document_id` | `id:<document_id>` | ID + content hash, so identical content under two IDs gives two separate documents |
-| Without `document_id` | `name:<filename>` | Content hash only, so an identical file is stored once whatever its name |
-
-The `id:` and `name:` prefixes keep the two kinds of identity apart, so neither
-can delete the other's chunks. A filename-based replace of `report.pdf` never
-touches a `report.pdf` uploaded with a `document_id`, and the reverse is also
-true. Replacing is opt-in because replacing by name alone would silently delete
-a different document that happens to share the name. `document_id` is how a
-client tells those documents apart.
-
-- **Write first, then delete.** The new version is stored *before* the old ones
-  are removed. Search never finds the document missing, and if embedding fails,
-  the old version is still there.
-- **One write at a time per identity key.** Without this, two concurrent
-  replaces (v2 and v3) could each delete the other's chunks and leave nothing.
-  A lock per key prevents that. Five concurrent replaces left exactly one
-  version, both by filename and by `document_id`.
-- **Duplicate names in one request are rejected** when replacing by filename,
-  because "the latest `x.pdf`" would be ambiguous. `document_id` is only allowed
-  with a single file.
+  instead of creating duplicates. No locking is needed, because concurrent
+  writes of the same document write identical points.
+- **Edited files are new documents:** an edited file has a different hash, so
+  it's stored next to the old version rather than replacing it. Versioning
+  wasn't part of the brief, so it's left out to keep the write path simple.
 
 ### Relevance cut-off
 Search drops results below `min_score` (default **0.15**), and Qdrant applies
@@ -294,8 +247,8 @@ combines vectors with keyword scoring such as BM25, is the standard fix.
 
 ### Why Qdrant
 A single container with a REST API, a readiness endpoint for health checks,
-cosine distance with an HNSW index, and payload filtering. Filtering is used to
-clean up leftover chunks. The collection is created on startup if it's missing,
+cosine distance with an HNSW index, and a server-side score threshold. The
+collection is created on startup if it's missing,
 and startup fails with a clear error if an existing collection has a different
 vector dimension.
 
@@ -327,11 +280,6 @@ so the next start doesn't download dependencies again.
 | Malformed JSON, wrong types, `top_k` out of range | 400 with a description |
 | Qdrant unreachable | `/health` returns 503; other endpoints return 500 with a generic message, and the traceback is logged. The app recovers automatically once Qdrant is back. |
 | Concurrent uploads and searches | Handled in parallel; uploading the same document at once still stores it only once |
-| Concurrent `replace=true` uploads of one filename | One write at a time per filename; the last one to finish is kept |
-| Same filename twice with `replace=true` | 400 `Duplicate filename ...` |
-| `replace` not true/false | 400 `replace must be true or false.` |
-| `document_id` with several files or a directory of PDFs | 400 `document_id can only be used when ingesting a single file.` |
-| `document_id` blank or over 200 characters | 400 |
 
 **Why plain text is accepted:** the provided test suite uploads plain text named
 `sample.pdf` and expects a 200. The fallback is deliberately narrow. Only files
@@ -339,7 +287,7 @@ so the next start doesn't download dependencies again.
 file that claims to be a PDF but is broken is rejected rather than read as text.
 
 Sample files for each case are in [`data/edge_cases/`](data/edge_cases/), and
-`data/` is generated by [`scripts/generate_sample_data.py`](scripts/generate_sample_data.py).
+[`tests/test_edge_cases.py`](tests/test_edge_cases.py) checks them against the running stack.
 
 ---
 
@@ -371,12 +319,15 @@ With the stack running:
 
 ```bash
 pip install pytest requests
-pytest tests/suite.py
+pytest tests/suite.py tests/test_edge_cases.py
 ```
 
 `tests/suite.py` is the provided end-to-end test: it ingests a file and runs a
-search. pytest only finds `test_*.py` files on its own, so pass the path
-explicitly.
+search. pytest only finds `test_*.py` files on its own, so pass its path
+explicitly. `tests/test_edge_cases.py` covers invalid files, a bad file inside
+a batch, invalid directories, empty and malformed queries, and concurrent
+uploads, including the same file uploaded five times at once being stored only
+once.
 
 To follow the logs:
 
@@ -392,9 +343,9 @@ search logs its query, result count and time taken.
 ## Limitations and next steps
 
 - **No OCR.** Scanned PDFs are rejected. Adding Tesseract would cover them.
-- **Replace locks only cover one process.** The per-document lock works because
-  the app runs as a single process. Running several workers or replicas would
-  need a distributed lock, for example in Redis, or versioned writes.
+- **No document versioning or deletion.** Re-ingesting an edited file keeps the
+  old version searchable. Replacing by a stable document ID, plus a delete
+  endpoint, would be the next step.
 - **Batches are processed in memory.** That's up to 20 × 50 MB per request. Large
   ingestions should become a background job queue, with the endpoint returning a
   job ID.

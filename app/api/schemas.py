@@ -21,7 +21,6 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     document: str
-    document_id: str | None = None
     score: float
     content: str
     page: int

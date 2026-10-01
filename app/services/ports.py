@@ -7,7 +7,6 @@ from app.services.chunking_service import Chunk
 @dataclass
 class SearchHit:
     document: str
-    document_id: str | None
     page: int
     chunk_id: int
     content: str
@@ -38,14 +37,8 @@ class ChunkRepository(Protocol):
     def is_ready(self) -> bool: ...
 
     def upsert_document(
-        self,
-        doc_id: str,
-        filename: str,
-        chunks: list[Chunk],
-        vectors: list[list[float]],
-        replace: bool = False,
-        document_id: str | None = None,
-    ) -> int: ...
+        self, doc_id: str, chunks: list[Chunk], vectors: list[list[float]]
+    ) -> None: ...
 
     def search(
         self, vector: list[float], limit: int, min_score: float
