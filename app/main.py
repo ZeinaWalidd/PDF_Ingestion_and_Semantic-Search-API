@@ -1,15 +1,21 @@
 import logging
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.services.pdf_service import (
-    PDFExtractionError,
-    extract_pages,
+from app.config import MAX_FILES_PER_REQUEST
+from app.services.ingestion_service import (
+    IngestionError,
+    check_file_count,
+    check_filename,
+    check_size,
+    prepare_document,
+    read_directory,
 )
-from app.services.chunking_service import chunk_pages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +56,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(status_code=400, content={"error": "; ".join(messages)})
 
 
+@app.exception_handler(IngestionError)
+async def ingestion_error_handler(request: Request, exc: IngestionError):
+    return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
@@ -63,66 +74,74 @@ def health():
     return {"status": "healthy"}
 
 
-@app.post("/ingest/")
-async def ingest(
-    input: list[UploadFile] = File(...)
-):
-    if not input:
-        raise HTTPException(
-            status_code=400,
-            detail="No files were provided",
+# /ingest/ reads the multipart form by hand because `input` may hold files
+# or a directory path string, which a typed FastAPI parameter can't express.
+# This schema keeps the endpoint usable from /docs.
+INGEST_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["input"],
+                    "properties": {
+                        "input": {
+                            "type": "array",
+                            "items": {"type": "string", "format": "binary"},
+                            "description": (
+                                "One or more PDF files, or a directory path "
+                                "inside the data volume (e.g. /data/pdfs)."
+                            ),
+                        }
+                    },
+                }
+            }
+        },
+    }
+}
+
+
+@app.post("/ingest/", openapi_extra=INGEST_OPENAPI)
+async def ingest(request: Request):
+    async with request.form(max_files=MAX_FILES_PER_REQUEST) as form:
+        items = form.getlist("input")
+        if not items:
+            raise HTTPException(status_code=400, detail="input: Field required")
+        files = await _collect_files(items)
+
+    # Validate every file before storing any, so one bad file in a batch
+    # fails the whole request instead of leaving a partial ingestion.
+    documents = []
+    for filename, file_bytes in files:
+        # Parsing is CPU-bound; running it in a worker thread keeps the event
+        # loop free to serve other requests (concurrent uploads, /health).
+        documents.append(
+            await run_in_threadpool(prepare_document, filename, file_bytes)
         )
 
-    ingested_files = []
-
-    for uploaded_file in input:
-        filename = uploaded_file.filename or ""
-
-        if not filename.lower().endswith(".pdf"):
-            raise HTTPException(
-                status_code=400,
-                detail="Only PDF files are accepted.",
-            )
-
-        file_bytes = await uploaded_file.read()
-
-        if not file_bytes:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File '{filename}' is empty.",
-            )
-
-        try:
-            pages = extract_pages(file_bytes, source=filename)
-        except PDFExtractionError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to process '{filename}': {exc}",
-            ) from exc
-
-        if not pages:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No text could be extracted from '{filename}'.",
-            )
-
-        chunks = chunk_pages(
-            pages=pages,
-            document=filename,
-        )
-
-        ingested_files.append(filename)
-
-        logger.info(
-            "%s: extracted %d pages and %d chunks",
-            filename, len(pages), len(chunks),
-        )
-
+    ingested_files = [document.filename for document in documents]
     noun = "document" if len(ingested_files) == 1 else "documents"
     return {
         "message": f"Successfully ingested {len(ingested_files)} PDF {noun}.",
         "files": ingested_files,
     }
+
+
+async def _collect_files(items: list[UploadFile | str]) -> list[tuple[str, bytes]]:
+    """Turn the `input` form entries into (filename, bytes) pairs."""
+    files = []
+    for item in items:
+        if isinstance(item, UploadFile):
+            filename = item.filename or ""
+            check_filename(filename)
+            check_size(filename, item.size)
+            files.append((filename, await item.read()))
+        else:
+            files.extend(await run_in_threadpool(read_directory, item))
+
+    check_file_count(len(files))
+    return files
 
 
 @app.post("/search/")
