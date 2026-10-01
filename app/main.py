@@ -12,7 +12,6 @@ from app.services.chunking_service import SentenceChunker
 from app.services.embedding_service import EmbeddingService
 from app.services.ingestion_service import IngestionError, IngestionService
 from app.services.pdf_service import PyMuPDFExtractor
-from app.services.ports import Chunker, ChunkRepository, Embedder, TextExtractor
 from app.services.search_service import SearchService
 from app.services.vector_store import VectorStore
 
@@ -29,39 +28,32 @@ INTERNAL_ERROR_MESSAGES = {
 }
 
 
-def create_app(
-    settings: Settings | None = None,
-    *,
-    extractor: TextExtractor | None = None,
-    chunker: Chunker | None = None,
-    embedder: Embedder | None = None,
-    repository: ChunkRepository | None = None,
-) -> FastAPI:
-
+def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Composition root: the only place that knows which adapters are used.
         # Built once before the server accepts requests, since loading the
         # model takes seconds.
-        app_embedder = embedder or EmbeddingService(settings.embedding_model)
-        app_repository = repository or VectorStore(
+        embedder = EmbeddingService(settings.embedding_model)
+        repository = VectorStore(
             url=settings.qdrant_url,
             collection=settings.qdrant_collection,
-            dimension=app_embedder.dimension,
+            dimension=embedder.dimension,
         )
         app.state.settings = settings
-        app.state.repository = app_repository
+        app.state.repository = repository
         app.state.ingestion_service = IngestionService(
-            extractor=extractor or PyMuPDFExtractor(),
-            chunker=chunker or SentenceChunker(
+            extractor=PyMuPDFExtractor(),
+            chunker=SentenceChunker(
                 chunk_size=settings.chunk_size_words,
                 overlap=settings.chunk_overlap_words,
             ),
-            embedder=app_embedder,
-            repository=app_repository,
+            embedder=embedder,
+            repository=repository,
         )
-        app.state.search_service = SearchService(app_embedder, app_repository)
+        app.state.search_service = SearchService(embedder, repository)
         yield
 
     app = FastAPI(

@@ -12,7 +12,6 @@ class EmbeddingService:
         started = time.perf_counter()
         self._model = SentenceTransformer(model_name, device="cpu")
         self._batch_size = batch_size
-        self.model_name = model_name
         dimension = self._model.get_embedding_dimension()
         if dimension is None:
             raise RuntimeError(f"Model {model_name} does not report an embedding dimension.")

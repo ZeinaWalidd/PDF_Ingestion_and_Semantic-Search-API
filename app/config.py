@@ -25,10 +25,6 @@ class Settings(BaseSettings):
     # at 0.13, on-topic ones started at 0.17.
     default_min_score: float = Field(0.15, ge=-1.0, le=1.0)
 
-    @property
-    def max_file_size_bytes(self) -> int:
-        return self.max_file_size_mb * 1024 * 1024
-
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
         if self.chunk_overlap_words >= self.chunk_size_words:

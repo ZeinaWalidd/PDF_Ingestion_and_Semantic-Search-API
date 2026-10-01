@@ -159,14 +159,8 @@ app/
   (`service: SearchServiceDep`, `settings: SettingsDep`) through FastAPI's
   `Depends`, instead of reading global state. `main.create_app()` is the
   composition root: the single place that chooses the concrete adapters and
-  builds each object once at startup. Any adapter can be passed in instead,
-  for example to use fakes in tests:
-
-  ```python
-  app = create_app(Settings(data_dir=tmp_path), embedder=FakeEmbedder(), repository=InMemoryRepository())
-  with TestClient(app) as client:
-      ...
-  ```
+  builds each object once at startup. Services receive their adapters through
+  their constructors, so they can be tested with fakes.
 
 ### Ingestion flow
 

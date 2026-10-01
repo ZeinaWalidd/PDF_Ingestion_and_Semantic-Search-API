@@ -24,7 +24,6 @@ class IngestionError(Exception):
 class PreparedDocument:
     doc_id: str
     filename: str
-    pages: list[dict]
     chunks: list[Chunk]
 
 
@@ -129,7 +128,6 @@ class IngestionService:
             # of the same document get the same doc_id, so they're stored once.
             doc_id=_content_hash(pages),
             filename=filename,
-            pages=pages,
             chunks=chunks,
         )
 
