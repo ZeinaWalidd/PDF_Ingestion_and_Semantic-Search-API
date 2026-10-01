@@ -138,18 +138,18 @@ and `503` otherwise. Docker's healthcheck and `orchestrate.sh` both rely on it.
 
 ```
 app/
-├── main.py                    # Composition root: builds adapters + services, error handlers
-├── config.py                  # All settings, overridable via environment variables
+├── main.py                    # create_app(): composition root, builds adapters + services, error handlers
+├── config.py                  # Settings class, validated at startup, overridable via environment variables
 ├── api/                       # HTTP layer only
 │   ├── routes.py              # Parse request → call service → shape response
 │   ├── schemas.py             # Request/response models
 │   └── dependencies.py        # FastAPI Depends() providers
 └── services/
-    ├── ports.py               # Embedder and ChunkRepository interfaces (Protocols)
+    ├── ports.py               # TextExtractor, Chunker, Embedder and ChunkRepository interfaces (Protocols)
     ├── ingestion_service.py   # IngestionService: validate → extract → chunk → embed → store
     ├── search_service.py      # SearchService: embed query → nearest-neighbour search
-    ├── pdf_service.py         # Bytes → pages of text (PDF parsing, plain-text fallback)
-    ├── chunking_service.py    # Pages → sentence-aware, overlapping chunks
+    ├── pdf_service.py         # TextExtractor adapter: PDF parsing with a plain-text fallback
+    ├── chunking_service.py    # Chunker adapter: sentence-aware, overlapping chunks
     ├── embedding_service.py   # Embedder adapter for sentence-transformers
     └── vector_store.py        # ChunkRepository adapter for Qdrant
 ```
@@ -157,28 +157,37 @@ app/
 ### Layers and patterns
 
 ```
- api/routes.py ──Depends()──► IngestionService / SearchService ──► Embedder, ChunkRepository (ports)
-   (HTTP only)                  (business rules, orchestration)            ▲              ▲
-                                                                 EmbeddingService     VectorStore
-                                                                 (sentence-transformers) (Qdrant)
+ api/routes.py ──Depends()──► IngestionService / SearchService ──► TextExtractor, Chunker, Embedder, ChunkRepository (ports)
+   (HTTP only)                  (business rules, orchestration)          ▲             ▲            ▲              ▲
+                                                               PyMuPDFExtractor SentenceChunker EmbeddingService VectorStore
+                                                                  (PyMuPDF)                 (sentence-transformers) (Qdrant)
 ```
 
 - **Service layer.** `IngestionService` and `SearchService` hold the business
   rules: validating every file before storing any, replace and `document_id`
   semantics, and timing logs. Routes only translate HTTP into service calls,
   so the same services could back a CLI or a queue worker.
-- **Ports and adapters.** The services depend on the `Embedder` and
-  `ChunkRepository` protocols in `ports.py`, never on sentence-transformers or
-  Qdrant directly. Swapping the model (e.g. an ONNX `fastembed` adapter to
-  shrink the image) or the database (e.g. pgvector) means writing one new
-  adapter, and the services don't change. The type checker verifies that the
-  current adapters satisfy the protocols.
+- **Ports and adapters.** The services depend on the `TextExtractor`,
+  `Chunker`, `Embedder` and `ChunkRepository` protocols in `ports.py`, never on
+  PyMuPDF, sentence-transformers or Qdrant directly. Swapping one step (an OCR
+  extractor for scanned PDFs, a token-based chunker, an ONNX `fastembed`
+  adapter to shrink the image, or pgvector instead of Qdrant) means writing one
+  new adapter, and the services don't change. Extractors signal unreadable
+  files by raising `ExtractionError`, so every extractor's errors become a 400
+  the same way. The type checker verifies that the current adapters satisfy
+  the protocols.
 - **Dependency injection.** Routes declare what they need
-  (`service: SearchServiceDep`) through FastAPI's `Depends`, instead of reading
-  global state. `main.lifespan` is the composition root: the single place that
-  chooses the concrete adapters and builds each object once. Any dependency
-  can be replaced with `app.dependency_overrides`, for example to use fakes in
-  tests.
+  (`service: SearchServiceDep`, `settings: SettingsDep`) through FastAPI's
+  `Depends`, instead of reading global state. `main.create_app()` is the
+  composition root: the single place that chooses the concrete adapters and
+  builds each object once at startup. Any adapter can be passed in instead,
+  for example to use fakes in tests:
+
+  ```python
+  app = create_app(Settings(data_dir=tmp_path), embedder=FakeEmbedder(), repository=InMemoryRepository())
+  with TestClient(app) as client:
+      ...
+  ```
 
 ### Ingestion flow
 
@@ -336,8 +345,12 @@ Sample files for each case are in [`data/edge_cases/`](data/edge_cases/), and
 
 ## Configuration
 
-All settings are environment variables with defaults in [`app/config.py`](app/config.py).
-They can be overridden in `docker-compose.yml`.
+All settings are fields of the `Settings` class in [`app/config.py`](app/config.py),
+and each one can be overridden by the environment variable below, for example in
+`docker-compose.yml`. Values are validated when the app starts, so an invalid
+configuration (a non-numeric limit, `CHUNK_OVERLAP_WORDS` not smaller than
+`CHUNK_SIZE_WORDS`, or `DEFAULT_TOP_K` above `MAX_TOP_K`) stops startup with a
+clear error instead of failing on the first request.
 
 | Variable | Default | Purpose |
 |---|---|---|

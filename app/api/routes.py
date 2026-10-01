@@ -2,9 +2,14 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from app.api.dependencies import IngestionServiceDep, RepositoryDep, SearchServiceDep
+from app.api.dependencies import (
+    IngestionServiceDep,
+    RepositoryDep,
+    SearchServiceDep,
+    SettingsDep,
+)
 from app.api.schemas import IngestResponse, SearchRequest, SearchResponse, SearchResult
-from app.config import MAX_FILES_PER_REQUEST
+from app.config import Settings
 from app.services.ingestion_service import (
     IngestionError,
     check_file_count,
@@ -72,14 +77,16 @@ INGEST_OPENAPI = {
 
 
 @router.post("/ingest/", response_model=IngestResponse, openapi_extra=INGEST_OPENAPI)
-async def ingest(request: Request, service: IngestionServiceDep):
-    async with request.form(max_files=MAX_FILES_PER_REQUEST) as form:
+async def ingest(
+    request: Request, service: IngestionServiceDep, settings: SettingsDep
+):
+    async with request.form(max_files=settings.max_files_per_request) as form:
         items = form.getlist("input")
         if not items:
             raise HTTPException(status_code=400, detail="input: Field required")
         replace = _parse_bool(form.get("replace"), field="replace")
         document_id = _parse_document_id(form.get("document_id"))
-        files = await _collect_files(items)
+        files = await _collect_files(items, settings)
 
     # Parsing and embedding are CPU-bound; a worker thread keeps the event
     # loop free for other requests (concurrent uploads, searches, /health).
@@ -134,17 +141,26 @@ def _parse_document_id(value: UploadFile | str | None) -> str | None:
     return value
 
 
-async def _collect_files(items: list[UploadFile | str]) -> list[tuple[str, bytes]]:
-    
+async def _collect_files(
+    items: list[UploadFile | str], settings: Settings
+) -> list[tuple[str, bytes]]:
     files = []
     for item in items:
         if isinstance(item, UploadFile):
             filename = item.filename or ""
             check_filename(filename)
-            check_size(filename, item.size)
+            check_size(filename, item.size, settings.max_file_size_mb)
             files.append((filename, await item.read()))
         else:
-            files.extend(await run_in_threadpool(read_directory, item))
+            files.extend(
+                await run_in_threadpool(
+                    read_directory,
+                    item,
+                    settings.data_dir,
+                    settings.max_file_size_mb,
+                    settings.max_files_per_request,
+                )
+            )
 
-    check_file_count(len(files))
+    check_file_count(len(files), settings.max_files_per_request)
     return files

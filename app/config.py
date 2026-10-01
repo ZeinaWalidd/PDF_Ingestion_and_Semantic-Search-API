@@ -1,20 +1,43 @@
-import os
+from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings
 
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
-MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-MAX_FILES_PER_REQUEST = int(os.getenv("MAX_FILES_PER_REQUEST", "20"))
 
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-CHUNK_SIZE_WORDS = int(os.getenv("CHUNK_SIZE_WORDS", "150"))
-CHUNK_OVERLAP_WORDS = int(os.getenv("CHUNK_OVERLAP_WORDS", "30"))
+class Settings(BaseSettings):
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "pdf_chunks")
-DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
-MAX_TOP_K = int(os.getenv("MAX_TOP_K", "50"))
-# Calibrated for all-MiniLM-L6-v2 on the sample data: off-topic queries peaked
-# at 0.13, on-topic ones started at 0.17.
-DEFAULT_MIN_SCORE = float(os.getenv("DEFAULT_MIN_SCORE", "0.15"))
+    data_dir: Path = Path("/data")
+
+    max_file_size_mb: int = Field(50, gt=0)
+    max_files_per_request: int = Field(20, gt=0)
+
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    chunk_size_words: int = Field(150, gt=0)
+    chunk_overlap_words: int = Field(30, ge=0)
+
+    qdrant_url: str = "http://qdrant:6333"
+    qdrant_collection: str = "pdf_chunks"
+    default_top_k: int = Field(5, ge=1)
+    max_top_k: int = Field(50, ge=1)
+    # Calibrated for all-MiniLM-L6-v2 on the sample data: off-topic queries peaked
+    # at 0.13, on-topic ones started at 0.17.
+    default_min_score: float = Field(0.15, ge=-1.0, le=1.0)
+
+    @property
+    def max_file_size_bytes(self) -> int:
+        return self.max_file_size_mb * 1024 * 1024
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> Self:
+        if self.chunk_overlap_words >= self.chunk_size_words:
+            raise ValueError("CHUNK_OVERLAP_WORDS must be smaller than CHUNK_SIZE_WORDS.")
+        if self.default_top_k > self.max_top_k:
+            raise ValueError("DEFAULT_TOP_K cannot be larger than MAX_TOP_K.")
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

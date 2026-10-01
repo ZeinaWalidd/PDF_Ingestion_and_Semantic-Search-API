@@ -4,6 +4,8 @@ from typing import cast
 
 import pymupdf
 
+from app.services.ports import ExtractionError
+
 logger = logging.getLogger(__name__)
 
 PDF_SIGNATURE = b"%PDF-"
@@ -11,17 +13,19 @@ SIGNATURE_SEARCH_WINDOW = 1024
 LINE_BREAK_HYPHEN = re.compile(r"(\w)-\n\s*([a-z])")
 
 
-class PDFExtractionError(Exception):
+class PDFExtractionError(ExtractionError):
     """Raised when a file is neither a readable PDF nor plain text."""
 
 
-def extract_pages(file_bytes: bytes, source: str = "<upload>") -> list[dict]:
+class PyMuPDFExtractor:
+    """TextExtractor adapter: PDFs via PyMuPDF, with a plain-text fallback."""
 
-    if PDF_SIGNATURE in file_bytes[:SIGNATURE_SEARCH_WINDOW]:
-        return _extract_pdf_pages(file_bytes)
+    def extract_pages(self, file_bytes: bytes, source: str = "<upload>") -> list[dict]:
+        if PDF_SIGNATURE in file_bytes[:SIGNATURE_SEARCH_WINDOW]:
+            return _extract_pdf_pages(file_bytes)
 
-    logger.warning("%s has no PDF signature; treating it as plain text.", source)
-    return _extract_plain_text(file_bytes)
+        logger.warning("%s has no PDF signature; treating it as plain text.", source)
+        return _extract_plain_text(file_bytes)
 
 
 def _extract_pdf_pages(file_bytes: bytes) -> list[dict]:

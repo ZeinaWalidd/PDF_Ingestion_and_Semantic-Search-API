@@ -14,6 +14,18 @@ class SearchHit:
     score: float
 
 
+class ExtractionError(Exception):
+    """Raised by a TextExtractor when a file can't be read; the message is shown to the client."""
+
+
+class TextExtractor(Protocol):
+    def extract_pages(self, file_bytes: bytes, source: str) -> list[dict]: ...
+
+
+class Chunker(Protocol):
+    def chunk(self, pages: list[dict], document: str) -> list[Chunk]: ...
+
+
 class Embedder(Protocol):
     dimension: int
 

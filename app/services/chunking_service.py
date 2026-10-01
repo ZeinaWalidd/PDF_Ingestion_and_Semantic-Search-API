@@ -17,6 +17,18 @@ class Chunk:
     content: str
 
 
+class SentenceChunker:
+
+    def __init__(self, chunk_size: int, overlap: int):
+        if overlap >= chunk_size:
+            raise ValueError("overlap must be smaller than chunk_size")
+        self._chunk_size = chunk_size
+        self._overlap = overlap
+
+    def chunk(self, pages: list[dict], document: str) -> list[Chunk]:
+        return chunk_pages(pages, document, self._chunk_size, self._overlap)
+
+
 def chunk_pages(
     pages: list[dict],
     document: str,

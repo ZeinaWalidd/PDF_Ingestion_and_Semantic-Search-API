@@ -2,18 +2,16 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
-from app.config import (
-    CHUNK_OVERLAP_WORDS,
-    CHUNK_SIZE_WORDS,
-    DATA_DIR,
-    MAX_FILE_SIZE_BYTES,
-    MAX_FILE_SIZE_MB,
-    MAX_FILES_PER_REQUEST,
+from app.services.chunking_service import Chunk
+from app.services.ports import (
+    Chunker,
+    ChunkRepository,
+    Embedder,
+    ExtractionError,
+    TextExtractor,
 )
-from app.services.chunking_service import Chunk, chunk_pages
-from app.services.pdf_service import PDFExtractionError, extract_pages
-from app.services.ports import ChunkRepository, Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +33,17 @@ def check_filename(filename: str) -> None:
         raise IngestionError("Only PDF files are accepted.")
 
 
-def check_size(filename: str, size: int | None) -> None:
-    if size is not None and size > MAX_FILE_SIZE_BYTES:
+def check_size(filename: str, size: int | None, max_size_mb: int) -> None:
+    if size is not None and size > max_size_mb * 1024 * 1024:
         raise IngestionError(
-            f"File '{filename}' exceeds the {MAX_FILE_SIZE_MB} MB limit."
+            f"File '{filename}' exceeds the {max_size_mb} MB limit."
         )
 
 
-def check_file_count(count: int) -> None:
-    if count > MAX_FILES_PER_REQUEST:
+def check_file_count(count: int, max_files: int) -> None:
+    if count > max_files:
         raise IngestionError(
-            f"Too many files: at most {MAX_FILES_PER_REQUEST} PDFs per request."
+            f"Too many files: at most {max_files} PDFs per request."
         )
 
 
@@ -56,53 +54,20 @@ def _content_hash(pages: list[dict]) -> str:
     return digest.hexdigest()
 
 
-def prepare_document(filename: str, file_bytes: bytes) -> PreparedDocument:
-    """Validate, extract and chunk one file. Raises IngestionError on bad input.
+def read_directory(
+    path: str, data_dir: Path, max_size_mb: int, max_files: int
+) -> list[tuple[str, bytes]]:
+    """Return (filename, bytes) for every PDF directly inside `path`, which must be under `data_dir`."""
 
-    This is CPU-bound, so callers in async code should run it in a thread.
-    """
-    if not file_bytes:
-        raise IngestionError(f"File '{filename}' is empty.")
-
-    try:
-        pages = extract_pages(file_bytes, source=filename)
-    except PDFExtractionError as exc:
-        raise IngestionError(f"Failed to process '{filename}': {exc}") from exc
-
-    if not pages:
-        raise IngestionError(f"No text could be extracted from '{filename}'.")
-
-    chunks = chunk_pages(
-        pages=pages,
-        document=filename,
-        chunk_size=CHUNK_SIZE_WORDS,
-        overlap=CHUNK_OVERLAP_WORDS,
-    )
-    logger.info(
-        "%s: extracted %d pages and %d chunks", filename, len(pages), len(chunks)
-    )
-    return PreparedDocument(
-        # Hash the extracted text, not the raw bytes: renamed or re-saved copies
-        # of the same document get the same doc_id, so they're stored once.
-        doc_id=_content_hash(pages),
-        filename=filename,
-        pages=pages,
-        chunks=chunks,
-    )
-
-
-def read_directory(path: str) -> list[tuple[str, bytes]]:
-    """Return (filename, bytes) for every PDF directly inside `path`. """
-    
     path = path.strip()
     if not path:
         raise IngestionError("Directory path cannot be empty.")
 
-    root = DATA_DIR.resolve()
+    root = data_dir.resolve()
     directory = (root / path).resolve()
 
     if not directory.is_relative_to(root):
-        raise IngestionError(f"Directory must be inside {DATA_DIR}.")
+        raise IngestionError(f"Directory must be inside {data_dir}.")
     if not directory.is_dir():
         raise IngestionError(f"Directory '{path}' does not exist.")
 
@@ -112,11 +77,11 @@ def read_directory(path: str) -> list[tuple[str, bytes]]:
     )
     if not pdf_paths:
         raise IngestionError(f"No PDF files found in '{path}'.")
-    check_file_count(len(pdf_paths))
+    check_file_count(len(pdf_paths), max_files)
 
     files = []
     for pdf_path in pdf_paths:
-        check_size(pdf_path.name, pdf_path.stat().st_size)
+        check_size(pdf_path.name, pdf_path.stat().st_size, max_size_mb)
         files.append((pdf_path.name, pdf_path.read_bytes()))
 
     logger.info("Found %d PDF(s) in %s", len(files), directory)
@@ -125,7 +90,15 @@ def read_directory(path: str) -> list[tuple[str, bytes]]:
 
 class IngestionService:
 
-    def __init__(self, embedder: Embedder, repository: ChunkRepository):
+    def __init__(
+        self,
+        extractor: TextExtractor,
+        chunker: Chunker,
+        embedder: Embedder,
+        repository: ChunkRepository,
+    ):
+        self._extractor = extractor
+        self._chunker = chunker
         self._embedder = embedder
         self._repository = repository
 
@@ -141,10 +114,35 @@ class IngestionService:
         if replace and document_id is None:
             _check_unique_filenames([filename for filename, _ in files])
 
-        documents = [prepare_document(filename, data) for filename, data in files]
+        documents = [self._prepare(filename, data) for filename, data in files]
         for document in documents:
             self._embed_and_store(document, replace, document_id)
         return [document.filename for document in documents]
+
+    def _prepare(self, filename: str, file_bytes: bytes) -> PreparedDocument:
+        if not file_bytes:
+            raise IngestionError(f"File '{filename}' is empty.")
+
+        try:
+            pages = self._extractor.extract_pages(file_bytes, source=filename)
+        except ExtractionError as exc:
+            raise IngestionError(f"Failed to process '{filename}': {exc}") from exc
+
+        if not pages:
+            raise IngestionError(f"No text could be extracted from '{filename}'.")
+
+        chunks = self._chunker.chunk(pages, document=filename)
+        logger.info(
+            "%s: extracted %d pages and %d chunks", filename, len(pages), len(chunks)
+        )
+        return PreparedDocument(
+            # Hash the extracted text, not the raw bytes: renamed or re-saved copies
+            # of the same document get the same doc_id, so they're stored once.
+            doc_id=_content_hash(pages),
+            filename=filename,
+            pages=pages,
+            chunks=chunks,
+        )
 
     def _embed_and_store(
         self, document: PreparedDocument, replace: bool, document_id: str | None

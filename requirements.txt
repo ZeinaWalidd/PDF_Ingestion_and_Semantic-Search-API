@@ -1,6 +1,7 @@
 fastapi==0.142.2
 uvicorn[standard]==0.54.0
 python-multipart==0.0.32
+pydantic-settings==2.15.0
 pymupdf==1.28.2
 sentence-transformers==6.1.0
 qdrant-client==1.19.1

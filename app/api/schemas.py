@@ -1,12 +1,14 @@
 from pydantic import BaseModel, Field, field_validator
 
-from app.config import DEFAULT_MIN_SCORE, DEFAULT_TOP_K, MAX_TOP_K
+from app.config import get_settings
+
+_settings = get_settings()
 
 
 class SearchRequest(BaseModel):
     query: str = Field(..., max_length=1000, examples=["Explain how vector embeddings work."])
-    top_k: int = Field(DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
-    min_score: float = Field(DEFAULT_MIN_SCORE, ge=-1.0, le=1.0)
+    top_k: int = Field(_settings.default_top_k, ge=1, le=_settings.max_top_k)
+    min_score: float = Field(_settings.default_min_score, ge=-1.0, le=1.0)
 
     @field_validator("query")
     @classmethod
