@@ -138,15 +138,47 @@ and `503` otherwise. Docker's healthcheck and `orchestrate.sh` both rely on it.
 
 ```
 app/
-├── main.py                    # HTTP layer: routes, request models, error handlers, startup
+├── main.py                    # Composition root: builds adapters + services, error handlers
 ├── config.py                  # All settings, overridable via environment variables
+├── api/                       # HTTP layer only
+│   ├── routes.py              # Parse request → call service → shape response
+│   ├── schemas.py             # Request/response models
+│   └── dependencies.py        # FastAPI Depends() providers
 └── services/
+    ├── ports.py               # Embedder and ChunkRepository interfaces (Protocols)
+    ├── ingestion_service.py   # IngestionService: validate → extract → chunk → embed → store
+    ├── search_service.py      # SearchService: embed query → nearest-neighbour search
     ├── pdf_service.py         # Bytes → pages of text (PDF parsing, plain-text fallback)
     ├── chunking_service.py    # Pages → sentence-aware, overlapping chunks
-    ├── ingestion_service.py   # Input validation, directory handling, per-document pipeline
-    ├── embedding_service.py   # Wraps the sentence-transformer model
-    └── vector_store.py        # Wraps Qdrant: collection setup, upsert, search
+    ├── embedding_service.py   # Embedder adapter for sentence-transformers
+    └── vector_store.py        # ChunkRepository adapter for Qdrant
 ```
+
+### Layers and patterns
+
+```
+ api/routes.py ──Depends()──► IngestionService / SearchService ──► Embedder, ChunkRepository (ports)
+   (HTTP only)                  (business rules, orchestration)            ▲              ▲
+                                                                 EmbeddingService     VectorStore
+                                                                 (sentence-transformers) (Qdrant)
+```
+
+- **Service layer.** `IngestionService` and `SearchService` hold the business
+  rules: validating every file before storing any, replace and `document_id`
+  semantics, and timing logs. Routes only translate HTTP into service calls,
+  so the same services could back a CLI or a queue worker.
+- **Ports and adapters.** The services depend on the `Embedder` and
+  `ChunkRepository` protocols in `ports.py`, never on sentence-transformers or
+  Qdrant directly. Swapping the model (e.g. an ONNX `fastembed` adapter to
+  shrink the image) or the database (e.g. pgvector) means writing one new
+  adapter, and the services don't change. The type checker verifies that the
+  current adapters satisfy the protocols.
+- **Dependency injection.** Routes declare what they need
+  (`service: SearchServiceDep`) through FastAPI's `Depends`, instead of reading
+  global state. `main.lifespan` is the composition root: the single place that
+  chooses the concrete adapters and builds each object once. Any dependency
+  can be replaced with `app.dependency_overrides`, for example to use fakes in
+  tests.
 
 ### Ingestion flow
 
@@ -325,16 +357,13 @@ They can be overridden in `docker-compose.yml`.
 With the stack running:
 
 ```bash
-pip install -r requirements.txt pytest requests
-pytest tests/suite.py tests/test_chunking_service.py
+pip install pytest requests
+pytest tests/suite.py
 ```
 
-- `tests/suite.py` is the provided end-to-end test. It needs the stack running.
-  pytest only finds `test_*.py` files on its own, so pass the path explicitly.
-- `tests/test_chunking_service.py` contains unit tests for sentence splitting
-  (abbreviations, initials, decimals, quotes) and for the chunker's guarantees:
-  no lost words, no chunk over the limit, overlap, page boundaries. They run
-  without Docker.
+`tests/suite.py` is the provided end-to-end test: it ingests a file and runs a
+search. pytest only finds `test_*.py` files on its own, so pass the path
+explicitly.
 
 To follow the logs:
 

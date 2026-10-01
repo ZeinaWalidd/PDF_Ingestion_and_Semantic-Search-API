@@ -1,11 +1,11 @@
 import logging
 import threading
 import uuid
-from dataclasses import dataclass
 
 from qdrant_client import QdrantClient, models
 
 from app.services.chunking_service import Chunk
+from app.services.ports import SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +25,6 @@ def _point_id(scope: str, doc_id: str, chunk_id: int) -> str:
 
 def _match(field: str, value: str) -> models.FieldCondition:
     return models.FieldCondition(key=field, match=models.MatchValue(value=value))
-
-
-@dataclass
-class SearchHit:
-    document: str
-    document_id: str | None
-    page: int
-    chunk_id: int
-    content: str
-    score: float
 
 
 class VectorStore:
