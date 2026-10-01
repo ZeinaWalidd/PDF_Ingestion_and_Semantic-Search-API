@@ -15,3 +15,6 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "pdf_chunks")
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
 MAX_TOP_K = int(os.getenv("MAX_TOP_K", "50"))
+# Calibrated for all-MiniLM-L6-v2 on the sample data: off-topic queries peaked
+# at 0.13, on-topic ones started at 0.17.
+DEFAULT_MIN_SCORE = float(os.getenv("DEFAULT_MIN_SCORE", "0.15"))

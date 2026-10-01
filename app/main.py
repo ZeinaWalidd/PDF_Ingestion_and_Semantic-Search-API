@@ -11,6 +11,7 @@ from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import (
+    DEFAULT_MIN_SCORE,
     DEFAULT_TOP_K,
     EMBEDDING_MODEL,
     MAX_FILES_PER_REQUEST,
@@ -202,6 +203,7 @@ def _embed_and_store(app: FastAPI, document: PreparedDocument) -> None:
 class SearchRequest(BaseModel):
     query: str = Field(..., max_length=1000, examples=["Explain how vector embeddings work."])
     top_k: int = Field(DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
+    min_score: float = Field(DEFAULT_MIN_SCORE, ge=-1.0, le=1.0)
 
     @field_validator("query")
     @classmethod
@@ -230,7 +232,9 @@ def search(body: SearchRequest, request: Request):
     embedder: EmbeddingService = request.app.state.embedder
     store: VectorStore = request.app.state.store
 
-    hits = store.search(embedder.embed_query(body.query), limit=body.top_k)
+    hits = store.search(
+        embedder.embed_query(body.query), limit=body.top_k, min_score=body.min_score
+    )
     logger.info(
         "Search %r returned %d results in %.2fs",
         body.query[:80], len(hits), time.perf_counter() - started,

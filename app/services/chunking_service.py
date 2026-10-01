@@ -1,7 +1,12 @@
 import re
 from dataclasses import dataclass
 
-SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+BOUNDARY_CANDIDATE = re.compile(r"[.!?][\"')\]]*\s+(?=[\"'(\[]?[A-Z0-9])")
+ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs",
+    "fig", "figs", "eq", "eqs", "ref", "refs", "vol", "ch", "sec", "approx",
+    "inc", "ltd", "corp", "dept", "al", "cf",
+}
 
 
 @dataclass
@@ -36,9 +41,34 @@ def chunk_pages(
     return chunks
 
 
+def split_into_sentences(text: str) -> list[str]:
+    sentences = []
+    start = 0
+    for match in BOUNDARY_CANDIDATE.finditer(text):
+        if text[match.start()] == "." and _is_abbreviation(text[start:match.start()]):
+            continue
+        sentences.append(text[start:match.end()].strip())
+        start = match.end()
+    sentences.append(text[start:].strip())
+    return [sentence for sentence in sentences if sentence]
+
+
+def _is_abbreviation(text_before_period: str) -> bool:
+    words = text_before_period.split()
+    if not words:
+        return False
+    word = words[-1].lstrip("\"'([").lower()
+    # Single initials ("J. Smith") and dotted forms ("e.g", "U.S", "Ph.D").
+    if len(word) == 1 and word.isalpha():
+        return True
+    if "." in word and word.replace(".", "").isalpha():
+        return True
+    return word in ABBREVIATIONS
+
+
 def _split_sentences(text: str, max_words: int, overlap: int) -> list[list[str]]:
     sentences = []
-    for sentence in SENTENCE_BOUNDARY.split(text):
+    for sentence in split_into_sentences(text):
         words = sentence.split()
         if len(words) <= max_words:
             if words:

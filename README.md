@@ -68,7 +68,15 @@ outside it are rejected. Subdirectories are not searched.
 {"query": "How does semantic search work?", "top_k": 3}
 ```
 
-`query` is required and cannot be blank. `top_k` is optional (default 5, range 1–50).
+`query` is required and cannot be blank. Optional fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `top_k` | 5 (range 1–50) | Maximum number of results |
+| `min_score` | 0.15 (range -1 to 1) | Drop results below this similarity; `-1` turns the cut-off off |
+
+A query unrelated to anything ingested returns `{"results": []}` rather than
+the "least bad" chunks.
 
 ```json
 {
@@ -84,8 +92,7 @@ outside it are rejected. Subdirectories are not searched.
 }
 ```
 
-`score` is cosine similarity, where higher means more relevant. In the sample
-data, relevant chunks score about 0.45–0.70 and unrelated ones score below 0.1.
+`score` is cosine similarity, where higher means more relevant.
 `page` and `chunk_id` are extra fields beyond the spec, so each result can be
 traced back to its source.
 
@@ -147,7 +154,14 @@ which measured at 196 tokens at most on real text. Chunks overlap by up to
 **30 words** of whole sentences.
 
 - **Sentence packing:** sentences are added to a chunk until the next one would
-  exceed the limit, so chunks don't end mid-sentence. A run longer than one
+  exceed the limit, so chunks don't end mid-sentence.
+- **Sentence detection without NLP dependencies.** A boundary is `.`, `!` or `?`
+  followed by a word that can start a sentence (a capital, digit or quote), so
+  "e.g. the model" stays together. A period after a known abbreviation
+  (`Dr.`, `Fig.`, `et al.`, `vs.`), a single initial (`J. Smith`) or a dotted
+  form (`U.S.`, `Ph.D.`) is not a boundary either. spaCy or NLTK would handle
+  more cases, but they would add a large dependency for a small gain: a wrong
+  boundary only makes a chunk end slightly early. A run longer than one
   chunk (a table, or text with no punctuation) is split with a sliding window,
   so no chunk goes over the limit.
 - **Per-page chunks:** chunks never cross a page, so every result points to
@@ -163,6 +177,19 @@ derived from `(doc_id, chunk_index)`. As a result:
   instead of creating duplicates.
 - **Leftover chunks are removed:** if the chunk settings change, a re-upload
   deletes chunks with a higher index than the new chunk count.
+
+### Relevance cut-off
+Search drops results below `min_score` (default **0.15**), and Qdrant applies
+the filter itself through `score_threshold`. The default is calibrated, not
+guessed. On the sample data, the best match for off-topic queries ("What is the
+capital of France?", "best pizza toppings", …) scored **0.07–0.13**, and the
+best match for on-topic queries scored **0.17–0.73**. The value depends on the
+model, so it is configurable (`DEFAULT_MIN_SCORE`) and can be overridden per
+request.
+
+The lowest on-topic score came from "what is HNSW" (0.17), because small
+embedding models handle acronyms and rare terms poorly. Hybrid search, which
+combines vectors with keyword scoring such as BM25, is the standard fix.
 
 ### Embeddings
 - **Model:** `all-MiniLM-L6-v2` is small (~90 MB), fast on CPU and a well-known
@@ -231,6 +258,7 @@ They can be overridden in `docker-compose.yml`.
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Also a build argument, since the model is baked into the image |
 | `CHUNK_SIZE_WORDS` / `CHUNK_OVERLAP_WORDS` | `150` / `30` | Chunk size and overlap |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `5` / `50` | Number of search results |
+| `DEFAULT_MIN_SCORE` | `0.15` | Default relevance cut-off (cosine similarity) |
 | `MAX_FILE_SIZE_MB` / `MAX_FILES_PER_REQUEST` | `50` / `20` | Upload limits |
 | `DATA_DIR` | `/data` | Root for directory ingestion |
 | `QDRANT_URL` / `QDRANT_COLLECTION` | `http://qdrant:6333` / `pdf_chunks` | Vector database |
@@ -243,13 +271,16 @@ They can be overridden in `docker-compose.yml`.
 With the stack running:
 
 ```bash
-pip install pytest requests
-pytest tests/suite.py
+pip install -r requirements.txt pytest requests
+pytest tests/suite.py tests/test_chunking_service.py
 ```
 
-`tests/suite.py` is the provided end-to-end test. It ingests a file and runs a
-search. pytest only finds `test_*.py` files on its own, so pass the path
-explicitly.
+- `tests/suite.py` is the provided end-to-end test. It needs the stack running.
+  pytest only finds `test_*.py` files on its own, so pass the path explicitly.
+- `tests/test_chunking_service.py` contains unit tests for sentence splitting
+  (abbreviations, initials, decimals, quotes) and for the chunker's guarantees:
+  no lost words, no chunk over the limit, overlap, page boundaries. They run
+  without Docker.
 
 To follow the logs:
 
@@ -271,11 +302,16 @@ search logs its query, result count and time taken.
 - **Batches are processed in memory.** That's up to 20 × 50 MB per request. Large
   ingestions should become a background job queue, with the endpoint returning a
   job ID.
-- **No relevance cut-off.** Search always returns the `top_k` closest chunks.
-  A minimum score, or a re-ranking step with a cross-encoder, would improve
-  precision.
-- **Simple sentence splitting.** It splits after abbreviations like "e.g.",
-  which makes a chunk end slightly early but never mid-word.
+- **Vector-only retrieval.** Acronyms and rare terms score low (see "Relevance
+  cut-off"). Hybrid search (BM25 plus vectors) and a cross-encoder re-ranking
+  step would improve precision. The 0.15 cut-off was calibrated on a small
+  sample set and should be re-tuned on real data.
+- **Rule-based sentence splitting.** Abbreviations missing from the list, or a
+  sentence that ends with an initial ("vitamin C. The…"), can move a chunk
+  boundary by a sentence.
 - **Image size of about 2.3 GB**, mostly PyTorch. An ONNX runtime such as
   `fastembed` would cut it substantially.
-- **No authentication or rate limiting.** This is a local evaluation setup.
+- **No authentication or rate limiting.** These are deliberately out of scope:
+  the assessment doesn't ask for them, and its usage flow and test suite call
+  the API without credentials. In production I'd put an API key or OAuth in
+  front of the service and rate-limit at the gateway.

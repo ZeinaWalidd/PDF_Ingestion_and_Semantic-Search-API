@@ -100,11 +100,14 @@ class VectorStore:
             wait=True,
         )
 
-    def search(self, vector: list[float], limit: int) -> list[SearchHit]:
+    def search(
+        self, vector: list[float], limit: int, min_score: float
+    ) -> list[SearchHit]:
         response = self._client.query_points(
             collection_name=self._collection,
             query=vector,
             limit=limit,
+            score_threshold=min_score,
             with_payload=True,
         )
         hits = []
