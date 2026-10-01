@@ -1,4 +1,5 @@
 import logging
+import re
 
 import pymupdf
 
@@ -6,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 PDF_SIGNATURE = b"%PDF-"
 SIGNATURE_SEARCH_WINDOW = 1024
+LINE_BREAK_HYPHEN = re.compile(r"(\w)-\n\s*([a-z])")
 
 
 class PDFExtractionError(Exception):
@@ -28,15 +30,21 @@ def _extract_pdf_pages(file_bytes: bytes) -> list[dict]:
         raise PDFExtractionError("The file is a corrupt or unreadable PDF.") from exc
 
     try:
+        if document.needs_pass:
+            raise PDFExtractionError("Password-protected PDFs are not supported.")
 
         pages = []
         for page_number, page in enumerate(document, start=1):
-            text = page.get_text().strip()
+            text = _join_hyphenated_words(page.get_text()).strip()
             if text:
                 pages.append({"page": page_number, "text": text})
         return pages
     finally:
         document.close()
+
+
+def _join_hyphenated_words(text: str) -> str:
+    return LINE_BREAK_HYPHEN.sub(r"\1\2", text)
 
 
 def _extract_plain_text(file_bytes: bytes) -> list[dict]:

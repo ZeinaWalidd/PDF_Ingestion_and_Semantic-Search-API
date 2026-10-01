@@ -2,7 +2,14 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.config import DATA_DIR, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MAX_FILES_PER_REQUEST
+from app.config import (
+    CHUNK_OVERLAP_WORDS,
+    CHUNK_SIZE_WORDS,
+    DATA_DIR,
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILE_SIZE_MB,
+    MAX_FILES_PER_REQUEST,
+)
 from app.services.chunking_service import Chunk, chunk_pages
 from app.services.pdf_service import PDFExtractionError, extract_pages
 
@@ -55,7 +62,12 @@ def prepare_document(filename: str, file_bytes: bytes) -> PreparedDocument:
     if not pages:
         raise IngestionError(f"No text could be extracted from '{filename}'.")
 
-    chunks = chunk_pages(pages=pages, document=filename)
+    chunks = chunk_pages(
+        pages=pages,
+        document=filename,
+        chunk_size=CHUNK_SIZE_WORDS,
+        overlap=CHUNK_OVERLAP_WORDS,
+    )
     logger.info(
         "%s: extracted %d pages and %d chunks", filename, len(pages), len(chunks)
     )

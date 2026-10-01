@@ -1,4 +1,6 @@
 import logging
+import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -7,7 +9,8 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.config import MAX_FILES_PER_REQUEST
+from app.config import EMBEDDING_MODEL, MAX_FILES_PER_REQUEST
+from app.services.embedding_service import EmbeddingService
 from app.services.ingestion_service import (
     IngestionError,
     check_file_count,
@@ -23,9 +26,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the model once, before the server accepts requests: loading takes
+    # seconds and the model is reused by every ingest and search call.
+    app.state.embedder = EmbeddingService(EMBEDDING_MODEL)
+    yield
+
+
 app = FastAPI(
     title="PDF Ingestor & Semantic Search API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 INTERNAL_ERROR_MESSAGES = {
@@ -118,6 +130,17 @@ async def ingest(request: Request):
         # loop free to serve other requests (concurrent uploads, /health).
         documents.append(
             await run_in_threadpool(prepare_document, filename, file_bytes)
+        )
+
+    embedder: EmbeddingService = request.app.state.embedder
+    for document in documents:
+        started = time.perf_counter()
+        vectors = await run_in_threadpool(
+            embedder.embed_documents, [chunk.content for chunk in document.chunks]
+        )
+        logger.info(
+            "%s: embedded %d chunks in %.2fs",
+            document.filename, len(vectors), time.perf_counter() - started,
         )
 
     ingested_files = [document.filename for document in documents]
