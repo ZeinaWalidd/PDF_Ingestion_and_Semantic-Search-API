@@ -315,19 +315,26 @@ clear error instead of failing on the first request.
 
 ## Testing
 
-With the stack running:
-
 ```bash
 pip install pytest requests
-pytest tests/suite.py tests/test_edge_cases.py
+
+# Chunker unit tests: no Docker needed, run in well under a second
+pytest tests/test_chunking.py
+
+# Everything, with the stack running
+pytest
 ```
 
-`tests/suite.py` is the provided end-to-end test: it ingests a file and runs a
-search. pytest only finds `test_*.py` files on its own, so pass its path
-explicitly. `tests/test_edge_cases.py` covers invalid files, a bad file inside
-a batch, invalid directories, empty and malformed queries, and concurrent
-uploads, including the same file uploaded five times at once being stored only
-once.
+- `tests/test_chunking.py` checks the chunker on its own: sentence boundaries
+  (including `Dr.`, `Fig.`, `J. Smith`, `U.S.` and `e.g.`), the word limit,
+  overlap between chunks, that no text is lost, the sliding window for long
+  unpunctuated runs, and that chunks never cross pages. The chunker uses only
+  the standard library, so these tests need nothing besides pytest.
+- `tests/suite.py` is the provided end-to-end test: it ingests a file and runs
+  a search.
+- `tests/test_edge_cases.py` covers invalid files, a bad file inside a batch,
+  invalid directories, empty and malformed queries, and concurrent uploads,
+  including the same file uploaded five times at once being stored only once.
 
 To follow the logs:
 

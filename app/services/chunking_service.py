@@ -26,31 +26,19 @@ class SentenceChunker:
         self._overlap = overlap
 
     def chunk(self, pages: list[dict], document: str) -> list[Chunk]:
-        return chunk_pages(pages, document, self._chunk_size, self._overlap)
-
-
-def chunk_pages(
-    pages: list[dict],
-    document: str,
-    chunk_size: int,
-    overlap: int,
-) -> list[Chunk]:
-
-    if overlap >= chunk_size:
-        raise ValueError("overlap must be smaller than chunk_size")
-
-    chunks = []
-    for page in pages:
-        for words in _pack_sentences(_split_sentences(page["text"], chunk_size, overlap), chunk_size, overlap):
-            chunks.append(
-                Chunk(
-                    document=document,
-                    page=page["page"],
-                    chunk_id=len(chunks),
-                    content=" ".join(words),
+        chunks = []
+        for page in pages:
+            sentences = _bounded_sentences(page["text"], self._chunk_size, self._overlap)
+            for words in _pack_sentences(sentences, self._chunk_size, self._overlap):
+                chunks.append(
+                    Chunk(
+                        document=document,
+                        page=page["page"],
+                        chunk_id=len(chunks),
+                        content=" ".join(words),
+                    )
                 )
-            )
-    return chunks
+        return chunks
 
 
 def split_into_sentences(text: str) -> list[str]:
@@ -78,7 +66,8 @@ def _is_abbreviation(text_before_period: str) -> bool:
     return word in ABBREVIATIONS
 
 
-def _split_sentences(text: str, max_words: int, overlap: int) -> list[list[str]]:
+def _bounded_sentences(text: str, max_words: int, overlap: int) -> list[list[str]]:
+    """Sentences as word lists; any sentence over max_words is cut into overlapping windows."""
     sentences = []
     for sentence in split_into_sentences(text):
         words = sentence.split()
