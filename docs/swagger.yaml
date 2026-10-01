@@ -1,0 +1,137 @@
+openapi: 3.0.3
+info:
+  title: PDF Ingestor & Semantic Search API
+  version: 1.0.0
+  description: |
+    A simple API that ingests PDF documents, generates embeddings, and enables
+    semantic search over the ingested content.
+
+servers:
+  - url: http://localhost:8000
+    description: Local server
+
+paths:
+  /ingest/:
+    post:
+      summary: Ingest PDFs into the system
+      description: |
+        Accepts a single field called `input`, which can be:
+        - a single PDF file,
+        - multiple PDF files, or
+        - a directory path containing PDFs.
+        Only PDF files are accepted.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                input:
+                  description: File(s) or directory path
+                  oneOf:
+                    - type: string
+                      description: Directory path (e.g., /data/pdfs)
+                    - type: string
+                      format: binary
+                      description: Single PDF file
+                    - type: array
+                      items:
+                        type: string
+                        format: binary
+                      description: Multiple PDF files
+              required: [input]
+      responses:
+        "200":
+          description: Ingestion successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Successfully ingested 3 PDF documents."
+                  files:
+                    type: array
+                    items:
+                      type: string
+                      example: "sample.pdf"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Only PDF files are accepted."
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Failed to process uploaded file."
+
+  /search/:
+    post:
+      summary: Perform semantic search
+      description: Search ingested PDFs for semantically similar content.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  example: "Explain how vector embeddings work."
+              required: [query]
+      responses:
+        "200":
+          description: Search successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        document:
+                          type: string
+                          example: "sample.pdf"
+                        score:
+                          type: number
+                          example: 0.89
+                        content:
+                          type: string
+                          example: "Vector embeddings represent text in a numerical space..."
+        "400":
+          description: Invalid query
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Query cannot be empty."
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Search processing failed."
