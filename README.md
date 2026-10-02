@@ -11,6 +11,10 @@ natural-language query.
 - **Vector database:** Qdrant
 - **Orchestration:** Docker Compose, driven by `orchestrate.sh`
 
+[`DESIGN.md`](DESIGN.md) is a short summary of the architecture and the reasoning
+behind each choice. This README covers how to run and use the service, plus the
+same decisions in more detail.
+
 ---
 
 ## Quick start
