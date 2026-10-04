@@ -45,7 +45,7 @@ def check_file_count(count: int, max_files: int) -> None:
             f"Too many files: at most {max_files} PDFs per request."
         )
 
-
+# creates a deterministic fingerprint of extracted document content (SHA-256)
 def _content_hash(pages: list[dict]) -> str:
     digest = hashlib.sha256()
     for page in pages:
@@ -124,8 +124,6 @@ class IngestionService:
             "%s: extracted %d pages and %d chunks", filename, len(pages), len(chunks)
         )
         return PreparedDocument(
-            # Hash the extracted text, not the raw bytes: renamed or re-saved copies
-            # of the same document get the same doc_id, so they're stored once.
             doc_id=_content_hash(pages),
             filename=filename,
             chunks=chunks,

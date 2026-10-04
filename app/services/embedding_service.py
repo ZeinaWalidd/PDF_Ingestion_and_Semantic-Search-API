@@ -40,4 +40,5 @@ class EmbeddingService:
             convert_to_numpy=True,
             show_progress_bar=False,
         )
+        # turns NumPy array into Python lists to be accepted by the repository
         return vectors.tolist()

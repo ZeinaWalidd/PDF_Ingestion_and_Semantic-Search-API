@@ -19,7 +19,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
+# Don't show httpx logs below WARNING.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 INTERNAL_ERROR_MESSAGES = {
@@ -33,9 +35,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Composition root: the only place that knows which adapters are used.
-        # Built once before the server accepts requests, since loading the
-        # model takes seconds.
+
         embedder = EmbeddingService(settings.embedding_model)
         repository = VectorStore(
             url=settings.qdrant_url,

@@ -21,8 +21,6 @@ class Settings(BaseSettings):
     qdrant_collection: str = "pdf_chunks"
     default_top_k: int = Field(5, ge=1)
     max_top_k: int = Field(50, ge=1)
-    # Calibrated for all-MiniLM-L6-v2 on the sample data: off-topic queries peaked
-    # at 0.13, on-topic ones started at 0.17.
     default_min_score: float = Field(0.15, ge=-1.0, le=1.0)
 
     @model_validator(mode="after")

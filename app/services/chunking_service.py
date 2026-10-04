@@ -67,7 +67,7 @@ def _is_abbreviation(text_before_period: str) -> bool:
 
 
 def _bounded_sentences(text: str, max_words: int, overlap: int) -> list[list[str]]:
-    """Sentences as word lists; any sentence over max_words is cut into overlapping windows."""
+    """Sentences as word lists; any sentence over max_words (chunk_size) is cut into overlapping windows."""
     sentences = []
     for sentence in split_into_sentences(text):
         words = sentence.split()
@@ -88,27 +88,34 @@ def _pack_sentences(
     chunk_size: int,
     overlap: int,
 ) -> list[list[str]]:
+    """Combines sentence units into actual chunks."""
     chunks = []
     current: list[list[str]] = []
     current_words = 0
 
     for sentence in sentences:
         if current and current_words + len(sentence) > chunk_size:
-            chunks.append([word for s in current for word in s])
+            chunks.append(_flatten(current))
             current = _overlap_tail(current, overlap)
             current_words = sum(len(s) for s in current)
             # Drop the overlap if it leaves no room for the next sentence.
+            # (overlap is best-effort not guaranteed)
             if current_words + len(sentence) > chunk_size:
                 current, current_words = [], 0
 
         current.append(sentence)
         current_words += len(sentence)
 
-    # Always holds at least one sentence not yet emitted, so the final chunk
-    # is never pure overlap.
     if current:
-        chunks.append([word for s in current for word in s])
+        chunks.append(_flatten(current))
     return chunks
+
+def _flatten(sentences: list[list[str]]) -> list[str]:
+    words = []
+    for sentence in sentences:
+        for word in sentence:
+            words.append(word)
+    return words
 
 
 def _overlap_tail(sentences: list[list[str]], overlap: int) -> list[list[str]]:
